@@ -2,7 +2,7 @@
 import torch
 import sys
 import os
-from .train import train_model, load_land_mask
+from src.train import train_model, load_land_mask
 import matplotlib.pyplot as plt
 
 def main():
@@ -35,8 +35,8 @@ def main():
     # Epochs: 1,000,000 
     # LR: Differential (Handled in train.py)
     # Weight: 50.0 
-    model = train_model(mask, num_epochs=1000000, batch_size=4096, lr=2e-5, 
-                        save_dir='world_results_massive', layers=24, num_bins=32, land_weight=50.0, hidden_dim=1024)
+    model = train_model(mask, num_epochs=10000, lr=2e-5, 
+                        save_dir='world_results_massive', num_bins=32, land_weight=50.0)
     
     ar = torch.exp(model.log_aspect_ratio).item()
     print(f"Training complete. Learned Aspect Ratio: {ar:.4f} (Log: {model.log_aspect_ratio.item():.4f})")

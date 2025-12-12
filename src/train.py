@@ -34,8 +34,8 @@ def load_land_mask(image_path, size=256):
     mask = torch.tensor(data < 0.5, dtype=torch.float32)
     return mask
 
-def train_model(land_mask, num_epochs=1000, batch_size=1024, lr=1e-3, 
-                save_dir='results', land_weight=10.0, hidden_dim=64, num_bins=16, layers=6, resume_from=None):
+def train_model(land_mask, num_epochs=1000, batch_size=4096, lr=1e-3, 
+                save_dir='results', land_weight=10.0, hidden_dim=1024, num_bins=16, layers=24, resume_from=None):
     
     os.makedirs(save_dir, exist_ok=True)
     
@@ -100,7 +100,11 @@ def train_model(land_mask, num_epochs=1000, batch_size=1024, lr=1e-3,
         
         inputs = torch.stack([u, v], dim=-1)
         
-        # Determine is_land for these points
+        # Map Earth [0, 1] to [0.1, 0.9]
+        inputs_net = inputs * 0.8 + 0.1
+        inputs_net.requires_grad_(True) # Required for checkpointing to work and Jacobian
+        
+        # Determine is_land for these points (using original u, v)
         # Map u, v to indices
         # u is x-axis (cols), v is y-axis (rows)
         # u index: floor(u * W)
@@ -115,7 +119,13 @@ def train_model(land_mask, num_epochs=1000, batch_size=1024, lr=1e-3,
         is_land = land_mask[v_idx, u_idx]
         
         # Forward pass (Get Jacobian)
-        jacobian_flow = model.get_jacobian(inputs)
+        # J_flow = d(output)/d(inputs_net)
+        jacobian_flow = model.get_jacobian(inputs_net)
+        
+        # Adjust Jacobian for the coordinate scaling
+        # d(inputs_net)/d(inputs) = 0.8
+        # J_total_flow = d(output)/d(inputs) = J_flow * 0.8
+        jacobian_flow = jacobian_flow * 0.8
         
         loss = compute_distortion_loss(jacobian_flow, u, v, is_land, land_weight=land_weight)
         

@@ -13,7 +13,7 @@ def generate_image(model_path, source_map_path, resolution=2048, batch_size=4096
     
     # Load Model
     # RealNVP with hidden=512, layers=16 (Ultra Scale)
-    model = BijectiveSquareFlow(num_layers=16, hidden_dim=512, num_bins=32).to(device)
+    model = BijectiveSquareFlow(num_bins=32).to(device)
     if os.path.exists(model_path):
         print(f"Loading model from {model_path}")
         model.load_state_dict(torch.load(model_path, map_location=device))
@@ -22,49 +22,67 @@ def generate_image(model_path, source_map_path, resolution=2048, batch_size=4096
 
     model.eval()
     
-    # Check Aspect Ratio
-    if hasattr(model, 'log_aspect_ratio'):
-        ar_val = torch.exp(model.log_aspect_ratio).item()
-        print(f"Model Learned Aspect Ratio: {ar_val:.4f}")
+    
+    # --- Dynamic Output Sizing ---
+    print("Calculating Map Bounding Box...")
+    # 1. Sample coarse grid on Earth [0, 1] x [0, 1]
+    # Use enough points to find the extrema
+    grid_res = 100
+    u_vals = torch.linspace(0, 1, grid_res, device=device)
+    v_vals = torch.linspace(0, 1, grid_res, device=device)
+    grid_u, grid_v = torch.meshgrid(u_vals, v_vals, indexing='xy')
+    earth_grid = torch.stack([grid_u.flatten(), grid_v.flatten()], dim=-1) # (N, 2)
+    
+    # 2. Map to Network Domain [0.1, 0.9]
+    net_inputs = earth_grid * 0.8 + 0.1
+    
+    # 3. Project Forward to get Map Coordinates
+    with torch.no_grad():
+        map_coords = model(net_inputs)
+        
+    # 4. Compute Bounds
+    min_x = map_coords[:, 0].min().item()
+    max_x = map_coords[:, 0].max().item()
+    min_y = map_coords[:, 1].min().item()
+    max_y = map_coords[:, 1].max().item()
+    
+    width = max_x - min_x
+    height = max_y - min_y
+    
+    print(f"Map Bounds: X[{min_x:.4f}, {max_x:.4f}], Y[{min_y:.4f}, {max_y:.4f}]")
+    print(f"Physical Size: {width:.4f} x {height:.4f}")
+    
+    # 5. Determine Image Resolution
+    # Keep min dimension at least 2048
+    min_dim = 2048
+    if width < height:
+        W_out = min_dim
+        H_out = int(min_dim * (height / width))
     else:
-        ar_val = 1.0
-        print("Model has no aspect ratio parameter, using 1.0")
-
-    # Load Source Image (Texture)
-    # Expected (C, H, W) for grid_sample
-    source_img = load_source_map(source_map_path).to(device)
+        H_out = min_dim
+        W_out = int(min_dim * (width / height))
+        
+    # Ensure divisible by 16 or something reasonable
+    W_out = (W_out // 16) * 16
+    H_out = (H_out // 16) * 16
+        
+    print(f"Output Image Resolution: {W_out} x {H_out}")
     
-    # Determine Output Dimensions based on AR
-    # W * H = R^2
-    # W / H = AR
-    # W = R * sqrt(AR)
-    # H = R / sqrt(AR)
-    W_out = int(resolution * np.sqrt(ar_val))
-    H_out = int(resolution / np.sqrt(ar_val))
-    print(f"Generating Output Image: {W_out} x {H_out}")
+    # --- Generate Grid for Inverse Sampling ---
+    # We want to sample the rectangle [min_x, max_x] x [min_y, max_y]
+    xs = torch.linspace(min_x, max_x, W_out, device=device)
+    ys = torch.linspace(min_y, max_y, H_out, device=device)
     
-    # Create coordinate grid in target "physical" space
-    # The domain model outputs to is [0, sqrt(AR)] x [0, 1/sqrt(AR)] (scaled)
-    # Or rather, model outputs [0, 1] then we scale it.
-    # So we should create grid in Scaled Space?
-    # Our `inverse` function expects Scaled Space inputs if we implemented it right.
-    # Checking model.py:
-    # Scale_x = exp(0.5*lambda).
-    # Forward: out = sigmoid(z) * scale.
-    # Inverse: in = y / scale; z = logit(in).
-    # So yes, inputs to inverse should be in [0, scale_x] x [0, scale_y].
-    
-    scale_x = np.sqrt(ar_val)
-    scale_y = 1.0 / np.sqrt(ar_val)
-    
-    y_coords = torch.linspace(0, scale_y, H_out, device=device)
-    x_coords = torch.linspace(0, scale_x, W_out, device=device)
-    grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing='ij')
-    
+    # Meshgrid (H, W)
+    grid_x, grid_y = torch.meshgrid(xs, ys, indexing='xy')
     flat_coords = torch.stack([grid_x.flatten(), grid_y.flatten()], dim=-1) # (N, 2)
     
     # Buffer for output image
-    output_buffer = torch.zeros(H_out * W_out, 3, device=device)
+    output_buffer = torch.zeros(H_out * W_out, 4, device=device)
+    
+    # Load Source Image (Texture)
+    # Expected (C, H, W) for grid_sample
+    source_img = load_source_map(source_map_path).to(device)
     
     N = flat_coords.shape[0]
     print(f"Processing {N} pixels in batches of {batch_size}...")
@@ -87,7 +105,19 @@ def generate_image(model_path, source_map_path, resolution=2048, batch_size=4096
             # Compute actual source coords
             source_coords = model.inverse(flat_coords[i : i + batch_size]).detach()
         
-        # --- Adaptive Graticules ---
+        # 1. Un-pad the coordinates (Network [0.1, 0.9] -> Texture [0, 1])
+        # source_coords is output of model.inverse (Network Domain)
+        
+        # Check for transparency (Out of bounds [0.1, 0.9])
+        # We need a mask for pixels that fell outside the Earth domain
+        valid_mask = (source_coords[:, 0] >= 0.1) & (source_coords[:, 0] <= 0.9) & \
+                     (source_coords[:, 1] >= 0.1) & (source_coords[:, 1] <= 0.9)
+                     
+        # Unscale valid coords
+        # u_tex = (u_net - 0.1) / 0.8
+        source_coords = (source_coords - 0.1) / 0.8
+        
+        # --- Adaptive Graticules (on valid coords) ---
         u_src = source_coords[:, 0]
         v_src = source_coords[:, 1]
         
@@ -105,8 +135,8 @@ def generate_image(model_path, source_map_path, resolution=2048, batch_size=4096
         target_px = 1.5
         
         # Pixel size in physical space
-        # x range is scale_x, covered by W_out pixels.
-        px_size = scale_x / W_out
+        # width is the map width (Physical Size)
+        px_size = width / W_out
         
         # Threshold in u-units = target_px_width * (du/d_px)
         # du/d_px = du/d_dist * d_dist/d_px = |grad u| * px_size
@@ -141,16 +171,28 @@ def generate_image(model_path, source_map_path, resolution=2048, batch_size=4096
         on_grid_expanded = on_grid.unsqueeze(-1).expand_as(sampled)
         sampled = torch.where(on_grid_expanded, 1.0 - sampled, sampled)
         
-        output_buffer[i : i + batch_size] = sampled
+        # Add Alpha Channel
+        # sampled is (B, 3). Create alpha (B, 1)
+        alpha = valid_mask.float().unsqueeze(-1) # 1.0 for valid, 0.0 for invalid
+        
+        # Combine [R, G, B, A]
+        sampled_rgba = torch.cat([sampled, alpha], dim=1) # (B, 4)
+        
+        # Force invalid pixels to transparent black (or just transparent)
+        # sampled_rgba = sampled_rgba * alpha # Pre-multiply alpha? 
+        # Usually PNG handles unmultiplied. But let's zero out RGB for clean look.
+        sampled_rgba[:, :3] = sampled_rgba[:, :3] * alpha
+        
+        output_buffer[i : i + batch_size] = sampled_rgba
         
         if i % (batch_size * 50) == 0:
             print(f"Processed {i}/{N}...")
 
     # Save
-    img_final = output_buffer.view(H_out, W_out, 3).cpu().numpy()
+    img_final = output_buffer.view(H_out, W_out, 4).cpu().numpy()
     img_final = (np.clip(img_final, 0, 1) * 255).astype(np.uint8)
     
-    output_file = "final_map_ultra_deep.png"
+    output_file = "final_map_latest.png"
     print(f"Saved {output_file}")
     plt.imsave(output_file, img_final)
 
@@ -163,8 +205,8 @@ def load_source_map(path):
 
 if __name__ == "__main__":
     generate_image(
-        "world_results_ultra/model_final.pth",
-        "equi_sat_8000x2000.png", 
+        "world_results_massive/model_latest.pth",
+        "light_map.png", 
         resolution=4096, 
         batch_size=2048 # Lower batch size since H=512 increases VRAM usage significantly
     )
