@@ -18,6 +18,7 @@ demo_results/
 !demo_mask.png
 !world_mask.png
 !world_mask_highres.png
+!light_map.png
 
 # Checkpoints
 *.pth
