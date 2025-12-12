@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "map-projection"
+version = "0.1.0"
+description = "Bijective map projection using normalizing flows"
+authors = ["Arthur B <arthurb@google.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.15"
+torch = ">=2.0.0"
+numpy = "^1.24"
+matplotlib = "^3.7"
+pillow = "^10.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

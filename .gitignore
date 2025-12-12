@@ -1,0 +1,23 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Project specific outputs
+world_results_*/
+identity_test/
+demo_results/
+
+# Large Data & Textures
+*.png
+*.jpg
+*.svg
+!demo_mask.png
+!world_mask.png
+!world_mask_highres.png
+
+# Checkpoints
+*.pth
