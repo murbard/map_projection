@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 class AffineCouplingLayer(nn.Module):
-    def __init__(self, input_dim, hidden_dim, mask_type):
+    def __init__(self, input_dim, hidden_dim, mask_type, activation_cls=nn.Softplus):
         super().__init__()
         self.mask_type = mask_type  # 0 or 1, determines which half is transformed
         
@@ -15,9 +15,9 @@ class AffineCouplingLayer(nn.Module):
         
         self.net = nn.Sequential(
             nn.Linear(1, hidden_dim),
-            nn.Softplus(),
+            activation_cls(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Softplus(),
+            activation_cls(),
             nn.Linear(hidden_dim, 2) # Output s and t
         )
         
@@ -184,14 +184,14 @@ class AffineCouplingLayer(nn.Module):
 import torch.utils.checkpoint
 
 class RealNVP(nn.Module):
-    def __init__(self, num_layers=24, hidden_dim=1024, num_bins=None):
+    def __init__(self, num_layers=24, hidden_dim=1024, num_bins=None, activation_cls=nn.Softplus):
         # num_bins is unused for RealNVP but kept for compatibility with existing calls
         super().__init__()
         
         self.layers = nn.ModuleList()
         for i in range(num_layers):
             # Alternate mask type
-            self.layers.append(AffineCouplingLayer(2, hidden_dim, i % 2))
+            self.layers.append(AffineCouplingLayer(2, hidden_dim, i % 2, activation_cls=activation_cls))
             
         # Learnable log aspect ratio parameter
         # Initialized to 0.0 (Aspect Ratio 1.0) - THE CANARY
