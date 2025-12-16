@@ -217,65 +217,7 @@ def main():
         progress = min(1.0, step / 1000000.0)
         barrier_weight = 0.01 * (1.0 - progress)
         
-        # 5. Land Expansion Barrier (User Request)
-        # Prevent land triangles from stretching excessively (Det Total >> 1).
-        # J_total = J_mesh @ J_sphere.
-        # Det(J_total) = Det(J_mesh) * Det(J_sphere).
-        # J_sphere approx diag(1/sin(theta), 1). Det = 1/sin(theta) (roughly, with constants).
-        # Actually Det(J_sphere) = Surface Element scaling UV -> Sphere?
-        # No, J_sphere maps Sphere -> UV (in utils.py).
-        # utils.py: J maps Sphere(Tangent) -> UV(Tangent).
-        # So Det(J) is d(AreaUVW)/d(AreaSphere).
-        # If Antarctica is stretched, UV Area is large, Sphere Area is small. Det is Large.
-        
-        # We need Det(J_total).
-        # We can approximate it or compute it.
-        # J_total is computed inside compute_distortion_loss but not returned.
-        # We can calculate it here:
-        # Det(J_mesh):
-        det_mesh = J_mesh[:, 0, 0] * J_mesh[:, 1, 1] - J_mesh[:, 0, 1] * J_mesh[:, 1, 0]
-        
-        # Det(J_sphere): 
-        # utils.py: J_00 = 1/(sqrt(pi)*sin), J_11 = 2/sqrt(pi). Zeros off-diag.
-        # Det = 2 / (pi * sin(theta)).
-        # theta = v_c * pi.
-        sin_theta = torch.sin(v_c * torch.pi).clamp(min=1e-6)
-        det_sphere = 2.0 / (torch.pi * sin_theta)
-        
-        det_total = det_mesh * det_sphere
-        
-        # Constraint: Det Total should not exceed Limit (e.g. 10.0) for Land.
-        land_limit = 10.0
-        # Only for triangles with land > 0.
-        land_expansion_excess = (det_total - land_limit).clamp(min=0)
-        # Weight by land fraction
-        land_expansion_loss = (land_expansion_excess * is_land.float()).mean()
-        
-        # Strong penalty
-        expansion_weight = 10.0
-        
-        # 6. Smoothness Regularization (Tendril preventing)
-        # Small penalty on edge lengths to encourage uniform distribution vs "tendrils"
-        # especially at poles where area distortion weight is near zero.
-        v_grid = mesh.vertices
-        
-        # Horizontal edges (Wrap around for u)
-        # diff_u: (H, W, 2) - (H, W, 2)
-        # We compare (i, j) with (i, j+1). Last col compares with first col.
-        diff_u = v_grid - torch.roll(v_grid, shifts=-1, dims=1)
-        
-        # Vertical edges (No wrap)
-        # Compare (i, j) with (i+1, j)
-        diff_v = v_grid[:-1, :, :] - v_grid[1:, :, :]
-        
-        # Mean Squared Edge Length
-        loss_smooth = (diff_u.norm(dim=-1)**2).mean() + (diff_v.norm(dim=-1)**2).mean()
-        
-        # Weighting: Needs to be small enough to not override map projection logic,
-        # but large enough to constrain zero-grad polar regions.
-        smooth_weight = 0.05
-        
-        loss = loss_distortion + barrier_weight * barrier_loss + expansion_weight * land_expansion_loss + smooth_weight * loss_smooth
+        loss = loss_distortion + barrier_weight * barrier_loss
         
         loss.backward()
         
