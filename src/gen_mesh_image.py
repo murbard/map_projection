@@ -10,27 +10,38 @@ from src.mesh import DifferentiableMesh
 from scipy.interpolate import LinearNDInterpolator
 
 def main():
-    save_dir = "mesh_results"
-    model_path = os.path.join(save_dir, "mesh_latest.pth")
-    texture_path = "light_map.png"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default="mesh_results_lowres/mesh_final.pth")
+    parser.add_argument("--output", type=str, default="final_map_mesh_lowres.png")
+    parser.add_argument("--width", type=int, default=1000)
+    parser.add_argument("--texture", type=str, default="light_map.png")
+    args = parser.parse_args()
+
+    model_path = args.model
+    output_path = args.output
+    texture_path = args.texture
+    target_width = args.width
+    
     if not os.path.exists(texture_path):
         texture_path = "equi_sat_8000x2000.png"
-        
-    output_path = "mesh_highres.png"
     
-    device = torch.device('cpu') # Interpolation is CPU bound mostly
+    device = torch.device('cpu')
     
     print(f"Loading {model_path}...")
     checkpoint = torch.load(model_path, map_location=device)
     
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+        
     # Init Mesh
-    # We need dimensions from weights or hardcode?
-    # Weights has 'vertices' shape (H, W, 2).
-    verts_shape = checkpoint['model_state_dict']['vertices'].shape
+    # We need dimensions from weights?
+    verts_shape = state_dict['vertices'].shape
     H_mesh, W_mesh = verts_shape[0], verts_shape[1]
     
     mesh = DifferentiableMesh(H_mesh, W_mesh).to(device)
-    mesh.load_state_dict(checkpoint['model_state_dict'])
+    mesh.load_state_dict(state_dict)
     
     # 1. Get Triangulation in Input Space (UV) and Output Space (XY)
     # We need to map Output XY -> Input UV.
@@ -72,7 +83,7 @@ def main():
     print(f"Map Bounds: X[{min_x:.2f}, {max_x:.2f}], Y[{min_y:.2f}, {max_y:.2f}]")
     
     # Resolution
-    target_width = 4000
+    aspect = (max_x - min_x) / (max_y - min_y)
     aspect = (max_x - min_x) / (max_y - min_y)
     target_height = int(target_width / aspect)
     

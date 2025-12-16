@@ -8,7 +8,7 @@ from src.mesh import DifferentiableMesh
 
 def main():
     save_dir = "mesh_results"
-    model_path = os.path.join(save_dir, "mesh_latest.pth")
+    model_path = "temp_mesh_wire.pth"
     output_path = "mesh_wireframe_highres.png"
     
     device = torch.device('cpu')
