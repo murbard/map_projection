@@ -68,18 +68,14 @@ def compute_sphere_jacobian_to_equirectangular(u, v, epsilon=1e-6):
     
     return jacobian
 
-def compute_distortion_loss(jacobian_flow, u, v, is_land, land_weight=10.0):
+def compute_distortion_loss(jacobian_flow, u, v, is_land, land_weight=10.0, geometry_weights=None):
     """
-    Computes the weighted distortion loss.
+    Computes the weighted distortion loss using Symmetric Frobenius Norms.
+    Loss = ||J||_F^(3/2) + ||J^-1||_F^(3/2)
     
     jacobian_flow: (B, 2, 2) Jacobian of the network f: (u,v) -> (x,y)
     u, v: (B,) Coordinates
     is_land: (B,) Boolean or Float mask (1.0 for land, 0.0 for sea)
-    
-    Total Jacobian J = J_flow * J_sphere_to_equirect
-    
-    We want J^T J to be close to Identity.
-    We minimize sum (log sigma_i)^2.
     """
     
     # 1. Compute Sphere -> UV Jacobian
@@ -88,32 +84,46 @@ def compute_distortion_loss(jacobian_flow, u, v, is_land, land_weight=10.0):
     
     # 2. Composition: Chain rule
     # J_total = J_flow @ J_sphere
-    # Note: J_flow is d(x,y)/d(u,v), J_sphere is d(u,v)/d(orth_sphere)
+    # J maps Sphere Tangent Plane -> Map Plane
     j_total = torch.bmm(jacobian_flow, jacobian_sphere)
     
     # 3. Compute Singular Values of J_total
-    # torch.linalg.svd is differentiable
     try:
-        # svd returns U, S, Vh. S contains singular values.
         _, s, _ = torch.linalg.svd(j_total)
     except RuntimeError:
-        # Fallback or noise injection if SVD fails (rare but possible with exact zeros)
-        # Adding tiny noise to diagonal
         j_total = j_total + torch.eye(2, device=j_total.device).unsqueeze(0) * 1e-6
         _, s, _ = torch.linalg.svd(j_total)
 
-    # 4. Log Euclidean Loss equivalent: sum (log(sigma))^2
-    log_s = torch.log(s + 1e-8) # Avoid log(0)
-    loss_per_point = torch.sum(log_s**2, dim=-1)
+    # 4. New Loss Calculation
+    # ||J||_F^2 = sum(s_i^2)
+    # ||J^-1||_F^2 = sum(1/s_i^2)
+    
+    # Avoid div by zero
+    s = s + 1e-8
+    
+    norm_sq = torch.sum(s**2, dim=-1)
+    norm_inv_sq = torch.sum(1.0 / (s**2), dim=-1)
+    
+    # Power 3/4 applied to the squared norms gives Power 3/2 to the norms
+    # ||J||^1.5 = (||J||^2)^0.75
+    term1 = torch.pow(norm_sq, 0.75)
+    term2 = torch.pow(norm_inv_sq, 0.75)
+    
+    loss_per_point = term1 + term2
     
     # 5. Weighted Mean
-    # Weights: 1.0 for sea, land_weight for land
     is_land = is_land.float()
-    weights = is_land * (land_weight - 1.0) + 1.0
+    import_weights = is_land * (land_weight - 1.0) + 1.0
     
-    # Clean possible NaNs from singularities (though clamped)
+    # Clean possible NaNs
     loss_per_point = torch.nan_to_num(loss_per_point, nan=0.0, posinf=0.0, neginf=0.0)
     
-    weighted_loss = (loss_per_point * weights).mean()
+    if geometry_weights is not None:
+        # Mesh training: Weighted Mean by Area
+        total_weights = import_weights * geometry_weights
+        weighted_loss = (loss_per_point * total_weights).sum() / (total_weights.sum() + 1e-8)
+    else:
+        # Standard training
+        weighted_loss = (loss_per_point * import_weights).mean()
     
     return weighted_loss

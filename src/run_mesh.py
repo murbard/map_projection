@@ -197,7 +197,9 @@ def main():
         # 1. Get Jacobians of Mesh
         J_mesh, E_q = mesh.get_jacobians()
         
-        # 2. Distortion Loss
+        # 4. Compute Loss
+        # Using area_weights (geometry) for correct integral on sphere.
+        # land_weight = 50.0 (Back to Land Priority)
         loss_distortion = compute_distortion_loss(J_mesh, u_c, v_c, is_land, land_weight=50.0, geometry_weights=area_weights)
         # 4. Barrier Loss (Soft Constraint)
         # Det2D = J_00 * J_11 - J_01 * J_10

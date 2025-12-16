@@ -7,9 +7,13 @@ import argparse
 from src.mesh import DifferentiableMesh
 
 def main():
-    save_dir = "mesh_results"
-    model_path = "temp_mesh_wire.pth"
-    output_path = "mesh_wireframe_highres.png"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default="mesh_results_100k/mesh_latest.pth")
+    parser.add_argument("--output", type=str, default="mesh_wireframe_highres.png")
+    args = parser.parse_args()
+
+    model_path = args.model
+    output_path = args.output
     
     device = torch.device('cpu')
     
